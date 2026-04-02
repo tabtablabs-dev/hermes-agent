@@ -78,6 +78,24 @@ def _resolve_memory_mode(
     return {"memory_mode": default, "peer_memory_modes": overrides}
 
 
+_BASE_URL_KEYS = ("baseUrl", "base_url", "baseURL")
+
+
+def _resolve_base_url(
+    raw: dict[str, Any],
+    host_block: dict[str, Any] | None = None,
+) -> str | None:
+    """Resolve self-hosted Honcho base URL with host block precedence."""
+    for source in ((host_block or {}), raw):
+        for key in _BASE_URL_KEYS:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    env_base_url = os.environ.get("HONCHO_BASE_URL", "").strip()
+    return env_base_url or None
+
+
 @dataclass
 class HonchoClientConfig:
     """Configuration for Honcho client, resolved for a specific host."""
@@ -137,8 +155,8 @@ class HonchoClientConfig:
     @classmethod
     def from_env(cls, workspace_id: str = "hermes") -> HonchoClientConfig:
         """Create config from environment variables (fallback)."""
-        api_key = os.environ.get("HONCHO_API_KEY")
-        base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
+        api_key = os.environ.get("HONCHO_API_KEY") or None
+        base_url = _resolve_base_url({})
         return cls(
             workspace_id=workspace_id,
             api_key=api_key,
@@ -197,11 +215,7 @@ class HonchoClientConfig:
             or raw.get("environment", "production")
         )
 
-        base_url = (
-            raw.get("baseUrl")
-            or os.environ.get("HONCHO_BASE_URL", "").strip()
-            or None
-        )
+        base_url = _resolve_base_url(raw, host_block)
 
         # Auto-enable when API key or base_url is present (unless explicitly disabled)
         # Host-level enabled wins, then root-level, then auto-enable if key/url exists.
@@ -408,7 +422,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             hermes_cfg = load_config()
             honcho_cfg = hermes_cfg.get("honcho", {})
             if isinstance(honcho_cfg, dict):
-                resolved_base_url = honcho_cfg.get("base_url", "").strip() or None
+                resolved_base_url = _resolve_base_url(honcho_cfg, {})
         except Exception:
             pass
 
@@ -417,14 +431,10 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     else:
         logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
 
-    # Local Honcho instances don't require an API key, but the SDK
-    # expects a non-empty string.  Use a placeholder for local URLs.
-    _is_local = resolved_base_url and (
-        "localhost" in resolved_base_url
-        or "127.0.0.1" in resolved_base_url
-        or "::1" in resolved_base_url
-    )
-    effective_api_key = config.api_key or ("local" if _is_local else None)
+    # Self-hosted Honcho instances may not require an API key, but the SDK
+    # expects a non-empty string. Use a harmless placeholder whenever an
+    # explicit base URL is configured without credentials.
+    effective_api_key = config.api_key or ("local" if resolved_base_url else None)
 
     kwargs: dict = {
         "workspace_id": config.workspace_id,
