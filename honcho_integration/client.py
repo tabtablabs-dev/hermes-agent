@@ -71,6 +71,18 @@ _VALID_RECALL_MODES = {"hybrid", "context", "tools"}
 _BASE_URL_KEYS = ("baseUrl", "base_url", "baseURL")
 
 
+def _bool_opt(host_block: dict, raw: dict, key: str, default: bool) -> bool:
+    """Resolve a boolean config option with host-level override."""
+    val = host_block.get(key)
+    if val is None:
+        val = raw.get(key)
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("true", "1", "yes", "on")
+
+
 def _normalize_recall_mode(val: str) -> str:
     """Normalize legacy recall mode values (e.g. 'auto' → 'hybrid')."""
     val = _RECALL_MODE_ALIASES.get(val, val)
@@ -159,8 +171,29 @@ class HonchoClientConfig:
     # reasoning_level: "minimal" | "low" | "medium" | "high" | "max"
     # Used as the default; prefetch_dialectic may bump it dynamically.
     dialectic_reasoning_level: str = "low"
+    # Ceiling for auto-bump. When equal to dialectic_reasoning_level, auto-bump
+    # is disabled. Set higher to allow dynamic escalation up to the cap.
+    dialectic_reasoning_cap: str = "low"
     # Max chars of dialectic result to inject into Hermes system prompt
     dialectic_max_chars: int = 600
+    # Prefetch cadence: which components to inject and how often.
+    # "first-turn" = session start only (default, cost-efficient).
+    # "every-turn" = unconditional per-turn fetch (legacy behavior).
+    # Integer N = every N turns.
+    dialectic_cadence: str | int = "first-turn"
+    context_cadence: str | int = "first-turn"
+    # Injection frequency: how many turns the cached Honcho context stays in
+    # the system prompt. Controls LLM input token cost.
+    # "first-turn" = inject on turn 0 only (model absorbs it, then it's dropped)
+    # "every-turn" = always inject (legacy behavior, costs tokens every turn)
+    # Integer N = inject for the first N turns, then suppress
+    injection_frequency: str | int = "every-turn"
+    # Per-component injection toggles
+    inject_representation: bool = True
+    inject_card: bool = True
+    inject_ai_representation: bool = False
+    inject_ai_card: bool = False
+    inject_dialectic: bool = True
     # Recall mode: how memory retrieval works when Honcho is active.
     # "hybrid"  — auto-injected context + Honcho tools available (model decides)
     # "context" — auto-injected context only, Honcho tools removed
@@ -311,11 +344,38 @@ class HonchoClientConfig:
                 or raw.get("dialecticReasoningLevel")
                 or "low"
             ),
+            dialectic_reasoning_cap=(
+                host_block.get("dialecticReasoningCap")
+                or raw.get("dialecticReasoningCap")
+                or host_block.get("dialecticReasoningLevel")
+                or raw.get("dialecticReasoningLevel")
+                or "low"
+            ),
             dialectic_max_chars=int(
                 host_block.get("dialecticMaxChars")
                 or raw.get("dialecticMaxChars")
                 or 600
             ),
+            dialectic_cadence=(
+                host_block.get("dialecticCadence")
+                or raw.get("dialecticCadence")
+                or "first-turn"
+            ),
+            context_cadence=(
+                host_block.get("contextCadence")
+                or raw.get("contextCadence")
+                or "first-turn"
+            ),
+            injection_frequency=(
+                host_block.get("injectionFrequency")
+                or raw.get("injectionFrequency")
+                or "every-turn"
+            ),
+            inject_representation=_bool_opt(host_block, raw, "injectRepresentation", True),
+            inject_card=_bool_opt(host_block, raw, "injectCard", True),
+            inject_ai_representation=_bool_opt(host_block, raw, "injectAiRepresentation", False),
+            inject_ai_card=_bool_opt(host_block, raw, "injectAiCard", False),
+            inject_dialectic=_bool_opt(host_block, raw, "injectDialectic", True),
             recall_mode=_normalize_recall_mode(
                 host_block.get("recallMode")
                 or raw.get("recallMode")

@@ -2619,6 +2619,7 @@ class AIAgent:
         try:
             self._honcho.prefetch_context(self._honcho_session_key, user_message)
             self._honcho.prefetch_dialectic(self._honcho_session_key, user_message or "What were we working on?")
+            self._honcho.increment_turn(self._honcho_session_key)
         except Exception as exc:
             logger.debug("Honcho background prefetch failed (non-fatal): %s", exc)
 
@@ -2657,29 +2658,47 @@ class AIAgent:
         return truncated + suffix
 
     def _honcho_prefetch(self, user_message: str) -> str:
-        """Assemble the first-turn Honcho context from the pre-warmed cache."""
+        """Assemble Honcho context from the pre-warmed cache.
+
+        Respects per-component injection toggles and injection_frequency
+        from honcho.yaml. injection_frequency controls how many turns the
+        cached context stays in the system prompt — after that, it's dropped
+        to save LLM input tokens.
+        """
         if not self._honcho or not self._honcho_session_key:
             return ""
         try:
+            hcfg = getattr(self, '_honcho_config', None)
+
+            # Check injection frequency — skip if past the configured window
+            if hcfg:
+                freq = hcfg.injection_frequency
+                turn = self._honcho._turn_counts.get(self._honcho_session_key, 0)
+                if freq == "first-turn" and turn > 0:
+                    return ""
+                elif isinstance(freq, int) and freq > 0 and turn >= freq:
+                    return ""
+                # "every-turn" or unrecognized: always inject
+
             parts = []
 
             ctx = self._honcho.pop_context_result(self._honcho_session_key)
             if ctx:
                 rep = ctx.get("representation", "")
                 card = ctx.get("card", "")
-                if rep:
+                if rep and (not hcfg or hcfg.inject_representation):
                     parts.append(f"## User representation\n{rep}")
-                if card:
+                if card and (not hcfg or hcfg.inject_card):
                     parts.append(card)
                 ai_rep = ctx.get("ai_representation", "")
                 ai_card = ctx.get("ai_card", "")
-                if ai_rep:
+                if ai_rep and (not hcfg or hcfg.inject_ai_representation):
                     parts.append(f"## AI peer representation\n{ai_rep}")
-                if ai_card:
+                if ai_card and (not hcfg or hcfg.inject_ai_card):
                     parts.append(ai_card)
 
             dialectic = self._honcho.pop_dialectic_result(self._honcho_session_key)
-            if dialectic:
+            if dialectic and (not hcfg or hcfg.inject_dialectic):
                 parts.append(f"## Continuity synthesis\n{dialectic}")
 
             if not parts:
