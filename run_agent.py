@@ -2584,6 +2584,40 @@ class AIAgent:
         except Exception as exc:
             logger.debug("Honcho background prefetch failed (non-fatal): %s", exc)
 
+    def _honcho_context_token_budget(self) -> int | None:
+        """Return the configured Honcho context budget, if any."""
+        config_budget = getattr(self._honcho_config, "context_tokens", None)
+        if isinstance(config_budget, int) and config_budget > 0:
+            return config_budget
+
+        manager_budget = getattr(self._honcho, "_context_tokens", None)
+        if isinstance(manager_budget, int) and manager_budget > 0:
+            return manager_budget
+        return None
+
+    def _truncate_honcho_context(self, text: str) -> str:
+        """Fit assembled Honcho context to the configured budget."""
+        token_budget = self._honcho_context_token_budget()
+        if not token_budget or token_budget <= 0:
+            return text
+
+        char_budget = token_budget * 4
+        if len(text) <= char_budget:
+            return text
+
+        suffix = "\n\n[… truncated to fit token budget]"
+        head_budget = max(char_budget - len(suffix), 0)
+        truncated = text[:head_budget].rstrip()
+        logger.debug(
+            "Honcho context exceeds budget (%d chars > %d char limit from %d tokens), truncating",
+            len(text),
+            char_budget,
+            token_budget,
+        )
+        if not truncated:
+            return suffix.lstrip()
+        return truncated + suffix
+
     def _honcho_prefetch(self, user_message: str) -> str:
         """Assemble the first-turn Honcho context from the pre-warmed cache."""
         if not self._honcho or not self._honcho_session_key:
@@ -2618,7 +2652,8 @@ class AIAgent:
                 "and what you were working on together. Do not call tools to "
                 "look up information that is already present here.\n"
             )
-            return header + "\n\n".join(parts)
+            assembled = header + "\n\n".join(parts)
+            return self._truncate_honcho_context(assembled)
         except Exception as e:
             logger.debug("Honcho prefetch failed (non-fatal): %s", e)
             return ""
