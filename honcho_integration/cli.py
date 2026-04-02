@@ -237,6 +237,16 @@ def cmd_setup(args) -> None:
     print("    hermes honcho map <name> — map this directory to a session name\n")
 
 
+def _check_connection(hcfg) -> None:
+    """Perform a real Honcho connectivity check using the session path."""
+    from honcho_integration.client import get_honcho_client
+    from honcho_integration.session import HonchoSessionManager
+
+    client = get_honcho_client(hcfg)
+    manager = HonchoSessionManager(honcho=client, config=hcfg)
+    manager.get_or_create(hcfg.resolve_session_name())
+
+
 def cmd_status(args) -> None:
     """Show current Honcho config and connection status."""
     try:
@@ -256,7 +266,7 @@ def cmd_status(args) -> None:
         return
 
     try:
-        from honcho_integration.client import HonchoClientConfig, get_honcho_client
+        from honcho_integration.client import HonchoClientConfig
         hcfg = HonchoClientConfig.from_global_config()
     except Exception as e:
         print(f"  Config error: {e}\n")
@@ -287,7 +297,7 @@ def cmd_status(args) -> None:
     if hcfg.enabled and (hcfg.api_key or hcfg.base_url):
         print("\n  Connection... ", end="", flush=True)
         try:
-            get_honcho_client(hcfg)
+            _check_connection(hcfg)
             print("OK\n")
         except Exception as e:
             print(f"FAILED ({e})\n")
