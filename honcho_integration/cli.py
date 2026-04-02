@@ -271,6 +271,27 @@ def _resolve_api_key(cfg: dict) -> str:
     return host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
 
 
+def _resolve_base_url(cfg: dict) -> str:
+    """Resolve base URL with host -> root -> env fallback.
+
+    Prefer canonical camelCase `baseUrl`, while accepting `base_url`
+    and `baseURL` as compatibility aliases.
+    """
+    host_cfg = ((cfg.get("hosts") or {}).get(HOST) or {})
+    for source in (host_cfg, cfg):
+        for key in ("baseUrl", "base_url", "baseURL"):
+            value = source.get(key)
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped:
+                    return stripped
+    return os.environ.get("HONCHO_BASE_URL", "").strip()
+
+
+def _has_honcho_credentials(cfg: dict) -> bool:
+    return bool(_resolve_api_key(cfg) or _resolve_base_url(cfg))
+
+
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
     suffix = f" [{default}]" if default else ""
     sys.stdout.write(f"  {label}{suffix}: ")
@@ -338,7 +359,7 @@ def cmd_setup(args) -> None:
     hosts = cfg.setdefault("hosts", {})
     hermes_host = hosts.setdefault(_host_key(), {})
 
-    # API key — shared credential, lives at root so all hosts can read it
+    # Connection settings — API key for hosted Honcho, baseUrl for local/self-hosted.
     current_key = cfg.get("apiKey", "")
     masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
     print(f"  Current API key: {masked}")
@@ -346,10 +367,20 @@ def cmd_setup(args) -> None:
     if new_key:
         cfg["apiKey"] = new_key
 
-    effective_key = cfg.get("apiKey", "")
-    if not effective_key:
-        print("\n  No API key configured. Get your API key at https://app.honcho.dev")
-        print("  Run 'hermes honcho setup' again once you have a key.\n")
+    current_base_url = _resolve_base_url(cfg)
+    print(f"  Current base URL: {current_base_url or 'not set'}")
+    new_base_url = _prompt("Honcho base URL (optional for local/self-hosted)", default=current_base_url or None)
+    if new_base_url:
+        hermes_host["baseUrl"] = new_base_url
+        hermes_host.pop("base_url", None)
+        hermes_host.pop("baseURL", None)
+
+    effective_key = _resolve_api_key(cfg)
+    effective_base_url = _resolve_base_url(cfg)
+    if not (effective_key or effective_base_url):
+        print("\n  No Honcho API key or base URL configured.")
+        print("  Hosted Honcho: get an API key at https://app.honcho.dev")
+        print("  Local/self-hosted Honcho: set a base URL like http://localhost:8000\n")
         return
 
     # Peer name
@@ -522,7 +553,8 @@ def cmd_status(args) -> None:
         print(f"  Config error: {e}\n")
         return
 
-    api_key = hcfg.api_key or ""
+    api_key = _resolve_api_key(cfg) or ""
+    base_url = _resolve_base_url(cfg) or hcfg.base_url or ""
     masked = f"...{api_key[-8:]}" if len(api_key) > 8 else ("set" if api_key else "not set")
 
     profile = _active_profile_name()
@@ -534,6 +566,7 @@ def cmd_status(args) -> None:
     print(f"  Host:           {hcfg.host}")
     print(f"  Enabled:        {hcfg.enabled}")
     print(f"  API key:        {masked}")
+    print(f"  Base URL:       {base_url or 'not set'}")
     print(f"  Workspace:      {hcfg.workspace_id}")
     print(f"  Config path:    {active_path}")
     if write_path != active_path:
@@ -826,8 +859,8 @@ def cmd_tokens(args) -> None:
 def cmd_identity(args) -> None:
     """Seed AI peer identity or show both peer representations."""
     cfg = _read_config()
-    if not _resolve_api_key(cfg):
-        print("  No API key configured. Run 'hermes honcho setup' first.\n")
+    if not _has_honcho_credentials(cfg):
+        print("  No Honcho API key or base URL configured. Run 'hermes honcho setup' first.\n")
         return
 
     file_path = getattr(args, "file", None)
@@ -924,7 +957,7 @@ def cmd_migrate(args) -> None:
                 agent_files.append(p)
 
     cfg = _read_config()
-    has_key = bool(_resolve_api_key(cfg))
+    has_key = _has_honcho_credentials(cfg)
 
     print("\nHoncho migration: OpenClaw native memory → Hermes\n" + "─" * 50)
     print()
@@ -939,8 +972,15 @@ def cmd_migrate(args) -> None:
     print("Step 1  Create a Honcho account")
     print()
     if has_key:
-        masked = f"...{cfg['apiKey'][-8:]}" if len(cfg["apiKey"]) > 8 else "set"
-        print(f"  Honcho API key already configured: {masked}")
+        api_key = _resolve_api_key(cfg)
+        base_url = _resolve_base_url(cfg)
+        if api_key:
+            masked = f"...{api_key[-8:]}" if len(api_key) > 8 else "set"
+            print(f"  Honcho API key already configured: {masked}")
+        else:
+            print("  Honcho API key: (none)")
+        if base_url:
+            print(f"  Honcho base URL: {base_url}")
         print("  Skip to Step 2.")
     else:
         print("  Honcho is a cloud memory service that gives Hermes persistent memory")
@@ -954,7 +994,7 @@ def cmd_migrate(args) -> None:
         if answer.lower() in ("y", "yes"):
             cmd_setup(args)
             cfg = _read_config()
-            has_key = bool(cfg.get("apiKey", ""))
+            has_key = _has_honcho_credentials(cfg)
         else:
             print()
             print("  Run 'hermes honcho setup' when ready, then re-run this walkthrough.")
