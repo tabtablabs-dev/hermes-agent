@@ -20,10 +20,10 @@ from honcho_integration.client import HonchoClientConfig
 class TestResolveApiKey:
     def test_prefers_host_scoped_key(self):
         cfg = {
-            "apiKey": "***",
+            "apiKey": "root-key",
             "hosts": {
                 "hermes": {
-                    "apiKey": "***",
+                    "apiKey": "host-key",
                 }
             },
         }
@@ -31,7 +31,7 @@ class TestResolveApiKey:
 
     def test_falls_back_to_root_key(self):
         cfg = {
-            "apiKey": "***",
+            "apiKey": "root-key",
             "hosts": {"hermes": {}},
         }
         assert _resolve_api_key(cfg) == "root-key"

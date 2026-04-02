@@ -422,8 +422,13 @@ class TestResolveConfigPath:
             result = resolve_config_path()
         assert result == GLOBAL_CONFIG_PATH
 
-    def test_falls_back_to_global_without_hermes_home_env(self):
-        with patch.dict(os.environ, {}, clear=False):
+    def test_falls_back_to_global_without_hermes_home_env(self, tmp_path):
+        hermes_home = tmp_path / "default-hermes-home"
+        hermes_home.mkdir()
+
+        with patch.dict(os.environ, {}, clear=False), patch(
+            "honcho_integration.client.get_hermes_home", return_value=hermes_home
+        ):
             os.environ.pop("HERMES_HOME", None)
             result = resolve_config_path()
         assert result == GLOBAL_CONFIG_PATH

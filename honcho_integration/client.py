@@ -218,7 +218,7 @@ class HonchoClientConfig:
     ) -> HonchoClientConfig:
         """Create config from environment variables (fallback)."""
         resolved_host = host or resolve_active_host()
-        api_key = os.environ.get("HONCHO_API_KEY")
+        api_key = os.environ.get("HONCHO_API_KEY", "").strip() or None
         base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
         return cls(
             host=resolved_host,
@@ -274,7 +274,8 @@ class HonchoClientConfig:
         api_key = (
             host_block.get("apiKey")
             or raw.get("apiKey")
-            or os.environ.get("HONCHO_API_KEY")
+            or os.environ.get("HONCHO_API_KEY", "").strip()
+            or None
         )
 
         environment = (
