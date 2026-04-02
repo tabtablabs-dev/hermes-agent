@@ -223,8 +223,8 @@ class TestFromGlobalConfig:
             config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.base_url == "http://config-host:9000"
 
-    def test_base_url_not_read_from_host_block(self, tmp_path):
-        """baseUrl is a root-level connection setting, not overridable per-host (consistent with apiKey)."""
+    def test_base_url_host_block_overrides_root(self, tmp_path):
+        """Host-scoped baseUrl should win over root and env fallbacks."""
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({
             "baseUrl": "http://root:9000",
@@ -232,7 +232,19 @@ class TestFromGlobalConfig:
         }))
 
         config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.base_url == "http://root:9000"
+        assert config.base_url == "http://host-block:9001"
+
+    def test_base_url_aliases_are_supported(self, tmp_path):
+        """base_url/baseURL aliases should resolve the same as baseUrl."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "baseURL": "http://root-alias:9000",
+            "hosts": {"hermes": {"base_url": "http://host-alias:9001"}},
+        }))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://host-alias:9001"
+
 
 
 class TestResolveSessionName:
@@ -370,6 +382,31 @@ class TestResolveConfigPath:
             config = HonchoClientConfig.from_global_config()
         assert config.api_key == "local-key"
         assert config.workspace_id == "local-ws"
+
+
+class TestGetHonchoClient:
+    def test_base_url_without_api_key_uses_placeholder(self):
+        import sys
+        import types
+
+        class FakeHoncho:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        reset_honcho_client()
+        config = HonchoClientConfig(
+            workspace_id="local-ws",
+            base_url="https://example-honcho.test",
+            api_key=None,
+            enabled=True,
+        )
+
+        with patch.dict(sys.modules, {"honcho": types.SimpleNamespace(Honcho=FakeHoncho)}):
+            client = get_honcho_client(config)
+
+        assert client.kwargs["workspace_id"] == "local-ws"
+        assert client.kwargs["base_url"] == "https://example-honcho.test"
+        assert client.kwargs["api_key"] == "local"
 
 
 class TestResetHonchoClient:
