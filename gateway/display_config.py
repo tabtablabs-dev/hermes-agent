@@ -35,6 +35,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    # Recalled memory previews are bounded and can be disabled per platform.
+    "memory_context": "preview",
+    "memory_context_max_chars": 1200,
 }
 
 # ---------------------------------------------------------------------------
@@ -191,4 +194,16 @@ def _normalise(setting: str, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError):
             return 0
+    if setting == "memory_context":
+        if value is False:
+            return "off"
+        if value is True:
+            return "preview"
+        mode = str(value).lower()
+        return mode if mode in {"off", "summary", "preview", "full"} else "preview"
+    if setting == "memory_context_max_chars":
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 1200
     return value

@@ -497,6 +497,67 @@ class VerboseAgent:
         }
 
 
+class MemoryPrefetchAgent:
+    """Agent that emits Hindsight-style memory prefetch progress."""
+
+    PREVIEW = (
+        '# Hindsight Memory (persistent cross-session context)\n\n'
+        'Use this to answer questions about the user and prior sessions. Do not call tools to look up information that is already present\n\n'
+        'here.\n\n'
+        '* [{"role": "user", "content": "User: [jim] [] Hindsight health is green\\n[ ] memory.prefetch emits exactly once", '
+        '"timestamp": "2026-04-24T20:30:36.770766+00:00"}, '
+        '{"role": "assistant", "content": "Assistant: Updated current checklist:\\n\\n```md\\n[x] Hindsight health is green\\n```", '
+        '"timestamp": "2026-04-24T20:31:00.000000+00:00"}]'
+    )
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "memory.prefetch",
+            None,
+            self.PREVIEW,
+            None,
+            providers=["hindsight"],
+            chars=14528,
+        )
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class RawMemoryContextPrefetchAgent(MemoryPrefetchAgent):
+    """Agent that emits the raw injected wrapper shape seen in Discord dogfood."""
+
+    PREVIEW = (
+        '<memory-context>\n'
+        '[System note: The following is recalled memory context, NOT new user input. '
+        'Treat as informational background data.]\n\n'
+        '# Hindsight Memory (persistent cross-session context)\n'
+        'Use this to answer questions about the user and prior sessions. Do not call tools to look up information that is already present here.\n\n'
+        '- [[{"role": "user", "content": "User: [jim] this is what im seeing", '
+        '"timestamp": "2026-04-24T21:25:35.131663+00:00"}]]\n'
+        '</memory-context>'
+    )
+
+
+class PlainTranscriptMemoryPrefetchAgent(MemoryPrefetchAgent):
+    """Agent that emits plain Hindsight transcript lines without JSON payloads."""
+
+    PREVIEW = (
+        '[System note: The following is recalled memory context, NOT new user input.]\n'
+        '# Hindsight Memory (persistent cross-session context)\n'
+        'Use this to answer questions about the user and prior sessions.\n'
+        'Assistant: Live dashboard is up. Tailnet link is ready.\n'
+        'Assistant: hi jim. Ready.'
+    )
+
+
 async def _run_with_agent(
     monkeypatch,
     tmp_path,
@@ -706,6 +767,110 @@ async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_pat
 
     assert result.get("already_sent") is True
     assert [call["content"] for call in adapter.sent] == ["You're welcome."]
+
+
+@pytest.mark.asyncio
+async def test_discord_memory_prefetch_preview_uses_markdown_not_raw_json(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        MemoryPrefetchAgent,
+        session_id="sess-memory-prefetch-discord",
+        config_data={"display": {"memory_context": "preview", "memory_context_max_chars": 700}},
+        platform=Platform.DISCORD,
+        chat_id="discord-1",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    all_content = "\n".join(call["content"] for call in adapter.sent)
+    all_content += "\n".join(call["content"] for call in adapter.edits)
+    assert "🧠 **Loaded memory context from hindsight** (14528 chars)" in all_content
+    assert "> 1. Hindsight health is green" in all_content
+    assert "> 2. Updated current checklist:" in all_content
+    assert "**User**:" not in all_content
+    assert "**Assistant**:" not in all_content
+    assert "[jim]" not in all_content
+    assert '"role"' not in all_content
+    assert '"content"' not in all_content
+    assert "Use this to answer questions" not in all_content
+    assert "```" not in all_content
+
+
+@pytest.mark.asyncio
+async def test_discord_memory_prefetch_preview_hides_raw_memory_context_wrapper(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        RawMemoryContextPrefetchAgent,
+        session_id="sess-memory-prefetch-discord-wrapper",
+        config_data={"display": {"memory_context": "preview", "memory_context_max_chars": 700}},
+        platform=Platform.DISCORD,
+        chat_id="discord-1",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    all_content = "\n".join(call["content"] for call in adapter.sent)
+    all_content += "\n".join(call["content"] for call in adapter.edits)
+    assert "🧠 **Loaded memory context from hindsight** (14528 chars)" in all_content
+    assert "> 1. this is what im seeing" in all_content
+    assert "**User**:" not in all_content
+    assert "[jim]" not in all_content
+    assert "<memory-context>" not in all_content
+    assert "</memory-context>" not in all_content
+    assert "[System note:" not in all_content
+    assert "# Hindsight Memory" not in all_content
+    assert "Use this to answer questions" not in all_content
+    assert '"role"' not in all_content
+    assert '"content"' not in all_content
+
+
+@pytest.mark.asyncio
+async def test_discord_memory_prefetch_preview_formats_plain_hindsight_transcript(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        PlainTranscriptMemoryPrefetchAgent,
+        session_id="sess-memory-prefetch-discord-plain",
+        config_data={"display": {"memory_context": "preview", "memory_context_max_chars": 700}},
+        platform=Platform.DISCORD,
+        chat_id="discord-1",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    all_content = "\n".join(call["content"] for call in adapter.sent)
+    all_content += "\n".join(call["content"] for call in adapter.edits)
+    assert "> 1. Live dashboard is up. Tailnet link is ready." in all_content
+    assert "> 2. hi jim. Ready." in all_content
+    assert "Assistant:" not in all_content
+    assert "# Hindsight Memory" not in all_content
+    assert "Use this to answer questions" not in all_content
+
+
+@pytest.mark.asyncio
+async def test_memory_prefetch_progress_is_discord_only(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        MemoryPrefetchAgent,
+        session_id="sess-memory-prefetch-telegram",
+        config_data={"display": {"memory_context": "preview", "memory_context_max_chars": 700}},
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = "\n".join(call["content"] for call in adapter.sent)
+    all_content += "\n".join(call["content"] for call in adapter.edits)
+    assert "Loaded memory context" not in all_content
+    assert "Hindsight health is green" not in all_content
 
 
 @pytest.mark.asyncio

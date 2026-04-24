@@ -9659,10 +9659,16 @@ class AIAgent:
         # Use original_user_message (clean input) — user_message may contain
         # injected skill content that bloats / breaks provider queries.
         _ext_prefetch_cache = ""
+        _prefetch_providers: list[str] = []
+        _ext_prefetch_progress_emitted = False
         if self._memory_manager:
             try:
                 _query = original_user_message if isinstance(original_user_message, str) else ""
-                _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
+                if hasattr(self._memory_manager, "prefetch_all_details"):
+                    _ext_prefetch_cache, _prefetch_providers = self._memory_manager.prefetch_all_details(_query)
+                else:
+                    _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
+                _ext_prefetch_cache = _ext_prefetch_cache or ""
             except Exception:
                 pass
 
@@ -9806,16 +9812,37 @@ class AIAgent:
                 # never mutated, so nothing leaks into session persistence.
                 if idx == current_turn_user_idx and msg.get("role") == "user":
                     _injections = []
+                    _memory_context_block = ""
                     if _ext_prefetch_cache:
-                        _fenced = build_memory_context_block(_ext_prefetch_cache)
-                        if _fenced:
-                            _injections.append(_fenced)
+                        _memory_context_block = build_memory_context_block(_ext_prefetch_cache)
+                        if _memory_context_block:
+                            _injections.append(_memory_context_block)
                     if _plugin_user_context:
                         _injections.append(_plugin_user_context)
                     if _injections:
                         _base = api_msg.get("content", "")
                         if isinstance(_base, str):
                             api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                            if (
+                                _memory_context_block
+                                and self.tool_progress_callback
+                                and not _ext_prefetch_progress_emitted
+                            ):
+                                _ext_prefetch_progress_emitted = True
+                                try:
+                                    _preview = sanitize_context(_ext_prefetch_cache).strip()
+                                    self.tool_progress_callback(
+                                        "memory.prefetch",
+                                        "memory",
+                                        _preview,
+                                        None,
+                                        providers=_prefetch_providers,
+                                        provider_count=len(_prefetch_providers),
+                                        chars=len(_ext_prefetch_cache),
+                                        injected=True,
+                                    )
+                                except Exception:
+                                    pass
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved

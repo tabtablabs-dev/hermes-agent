@@ -54,6 +54,23 @@ class TestResolveDisplaySetting:
         # Unknown platform, no config → global default "all"
         assert resolve_display_setting(config, "unknown_platform", "tool_progress") == "all"
 
+    def test_memory_context_defaults_to_preview_for_all_platforms(self):
+        """Memory context defaults to bounded preview everywhere for dogfood visibility."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {}
+        for plat in (
+            "discord",
+            "telegram",
+            "tui",
+            "api_server",
+            "webhook",
+            "email",
+            "unknown_platform",
+        ):
+            assert resolve_display_setting(config, plat, "memory_context") == "preview", plat
+            assert resolve_display_setting(config, plat, "memory_context_max_chars") == 1200, plat
+
     def test_fallback_parameter_used_last(self):
         """Explicit fallback is used when nothing else matches."""
         from gateway.display_config import resolve_display_setting
@@ -169,6 +186,28 @@ class TestYAMLNormalisation:
 
         config = {"display": {"platforms": {"slack": {"tool_progress": False}}}}
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
+
+    def test_memory_context_modes_normalised(self):
+        """Memory context mode values are normalised and validated."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting(
+            {"display": {"memory_context": False}}, "discord", "memory_context"
+        ) == "off"
+        assert resolve_display_setting(
+            {"display": {"memory_context": True}}, "discord", "memory_context"
+        ) == "preview"
+        assert resolve_display_setting(
+            {"display": {"memory_context": "SUMMARY"}}, "discord", "memory_context"
+        ) == "summary"
+        assert resolve_display_setting(
+            {"display": {"memory_context": "nonsense"}}, "discord", "memory_context"
+        ) == "preview"
+        assert resolve_display_setting(
+            {"display": {"memory_context_max_chars": "80"}},
+            "discord",
+            "memory_context_max_chars",
+        ) == 80
 
 
 # ---------------------------------------------------------------------------

@@ -176,24 +176,32 @@ class MemoryManager:
 
     # -- Prefetch / recall ---------------------------------------------------
 
-    def prefetch_all(self, query: str, *, session_id: str = "") -> str:
-        """Collect prefetch context from all providers.
+    def prefetch_all_details(self, query: str, *, session_id: str = "") -> tuple[str, list[str]]:
+        """Collect prefetch context plus provider names from all providers.
 
-        Returns merged context text labeled by provider. Empty providers
-        are skipped. Failures in one provider don't block others.
+        Returns merged context text and the names of providers that contributed
+        non-empty context. Empty providers are skipped. Failures in one provider
+        don't block others.
         """
         parts = []
+        providers = []
         for provider in self._providers:
             try:
                 result = provider.prefetch(query, session_id=session_id)
                 if result and result.strip():
                     parts.append(result)
+                    providers.append(provider.name)
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
                     provider.name, e,
                 )
-        return "\n\n".join(parts)
+        return "\n\n".join(parts), providers
+
+    def prefetch_all(self, query: str, *, session_id: str = "") -> str:
+        """Collect prefetch context from all providers."""
+        text, _providers = self.prefetch_all_details(query, session_id=session_id)
+        return text
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn."""

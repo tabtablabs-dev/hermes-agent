@@ -4771,6 +4771,110 @@ class TestMemoryContextSanitization:
         assert "stale observation" not in result
         assert "how is the honcho working" in result
 
+    def test_memory_prefetch_emits_progress_with_provider_names(self, agent):
+        raw_memory = (
+            "# Hindsight Memory (persistent cross-session context)\n"
+            "Use this to answer questions about the user and prior sessions.\n\n"
+            '- [{"role": "user", "content": "User: [jim] prior useful context"}]\n'
+        )
+
+        class FakeMemoryManager:
+            def on_turn_start(self, *_args, **_kwargs):
+                pass
+
+            def prefetch_all_details(self, query, *, session_id=""):
+                assert query == "hello"
+                return raw_memory, ["hindsight"]
+
+            def sync_all(self, *_args, **_kwargs):
+                pass
+
+            def queue_prefetch_all(self, *_args, **_kwargs):
+                pass
+
+        events = []
+
+        def capture_progress(*args, **kwargs):
+            events.append((args, kwargs))
+
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent._memory_manager = FakeMemoryManager()
+        agent.tool_progress_callback = capture_progress
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Final answer"
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert "<memory-context>" in sent_messages[-1]["content"]
+        assert "prior useful context" in sent_messages[-1]["content"]
+        memory_events = [(args, kwargs) for args, kwargs in events if args[0] == "memory.prefetch"]
+        assert len(memory_events) == 1
+        args, kwargs = memory_events[0]
+        assert args[:2] == ("memory.prefetch", "memory")
+        assert "prior useful context" in args[2]
+        assert kwargs["providers"] == ["hindsight"]
+        assert kwargs["provider_count"] == 1
+        assert kwargs["chars"] == len(raw_memory)
+        assert kwargs["injected"] is True
+
+    def test_memory_prefetch_progress_only_emits_when_context_block_injected(self, agent):
+        raw_memory = "memory text"
+
+        class FakeMemoryManager:
+            def on_turn_start(self, *_args, **_kwargs):
+                pass
+
+            def prefetch_all_details(self, query, *, session_id=""):
+                assert query == "hello"
+                return raw_memory, ["hindsight"]
+
+            def sync_all(self, *_args, **_kwargs):
+                pass
+
+            def queue_prefetch_all(self, *_args, **_kwargs):
+                pass
+
+        events = []
+
+        def capture_progress(*args, **kwargs):
+            events.append((args, kwargs))
+
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent._memory_manager = FakeMemoryManager()
+        agent.tool_progress_callback = capture_progress
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+
+        with (
+            patch.object(run_agent, "build_memory_context_block", return_value=""),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Final answer"
+        assert [args for args, _kwargs in events if args[0] == "memory.prefetch"] == []
+
 
 class TestMemoryProviderTurnStart:
     """run_conversation() must call memory_manager.on_turn_start() before prefetch_all().

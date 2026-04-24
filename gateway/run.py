@@ -9398,9 +9398,136 @@ class GatewayRunner:
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
         
+        def _discord_escape_preview(text: str) -> str:
+            """Keep previews Discord-safe without hiding useful markdown structure."""
+            text = str(text or "")
+            text = text.replace("```", "'''")
+            # Avoid accidental pings from recalled chat/user text.
+            text = text.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+            text = re.sub(r"<@([!&]?\d+)>", lambda m: f"<@\u200b{m.group(1)}>", text)
+            return text
+
+        def _discord_quote(text: str, max_chars: int) -> str:
+            """Render a bounded Discord-native blockquote preview."""
+            text = _discord_escape_preview(text).strip()
+            if max_chars > 0 and len(text) > max_chars:
+                text = text[:max_chars] if max_chars <= 3 else text[:max_chars - 3].rstrip() + "..."
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            return "\n".join(f"> {line}" for line in lines[:12])
+
+        def _discord_memory_preview(text: str, max_chars: int) -> str:
+            """Render recalled memory context as readable Discord markdown.
+
+            Hindsight returns agent-injected context that can include provider
+            instructions plus raw JSON-ish transcript objects.  For Discord
+            dogfooding, show the actual recalled snippets instead of dumping
+            the injection wrapper.
+            """
+            raw = str(text or "").strip()
+            if not raw:
+                return ""
+
+            def _clean_snippet(value: str) -> str:
+                value = re.sub(r"\s+", " ", str(value)).strip()
+                value = re.sub(r"^(?:User|Assistant):\s*", "", value, flags=re.IGNORECASE).strip()
+                return re.sub(r"^(?:\[[^\]]*\]\s*)+", "", value).strip()
+
+            def _is_noise(value: str) -> bool:
+                stripped = value.strip()
+                lower = stripped.lower()
+                return (
+                    not stripped
+                    or lower.startswith("[system note:")
+                    or lower.startswith("# hindsight memory")
+                    or lower.startswith("use this to answer questions")
+                    or lower == "here."
+                    or '"role"' in stripped
+                    or '"content"' in stripped
+                    or (stripped.startswith(("-", "*")) and "[{" in stripped)
+                )
+
+            snippets = []
+            for match in re.finditer(r'"content"\s*:\s*"((?:\\.|[^"\\])*)"', raw):
+                encoded = match.group(1)
+                try:
+                    decoded = json.loads(f'"{encoded}"')
+                except Exception:
+                    decoded = encoded
+                decoded = _clean_snippet(decoded)
+                if decoded:
+                    snippets.append(decoded)
+                if len(snippets) >= 4:
+                    break
+
+            if not snippets:
+                raw_without_tags = re.sub(r"</?\s*memory-context\s*>", "", raw, flags=re.IGNORECASE)
+                for line in raw_without_tags.splitlines():
+                    cleaned = _clean_snippet(line)
+                    if _is_noise(cleaned):
+                        continue
+                    snippets.append(cleaned)
+                    if len(snippets) >= 4:
+                        break
+
+            if snippets:
+                lines = []
+                used = 0
+                for idx, body in enumerate(snippets, 1):
+                    item = _discord_escape_preview(body)
+                    prefix = f"> {idx}. "
+                    remaining = max_chars - used if max_chars > 0 else len(prefix) + len(item)
+                    if max_chars > 0 and remaining <= len(prefix):
+                        break
+                    cap = min(280, max(0, remaining - len(prefix))) if max_chars > 0 else 280
+                    if len(item) > cap:
+                        item = item[:cap] if cap <= 3 else item[: cap - 3].rstrip() + "..."
+                    line = f"{prefix}{item}"
+                    lines.append(line)
+                    used += len(line) + 1
+                if lines:
+                    return "\n".join(lines)
+
+            # Fallback: never quote raw injected-memory wrappers or JSON-ish
+            # transcript payloads.  If extraction above missed the provider's
+            # shape, prefer a terse hidden-preview marker over leaking
+            # <memory-context> / system-note text into Discord.
+            filtered_lines = []
+            raw_without_tags = re.sub(r"</?\s*memory-context\s*>", "", raw, flags=re.IGNORECASE)
+            for line in raw_without_tags.splitlines():
+                stripped = _clean_snippet(line)
+                if _is_noise(stripped):
+                    continue
+                filtered_lines.append(stripped)
+            if not filtered_lines:
+                return "> _Preview hidden: recalled context was structured/internal metadata._"
+            return _discord_quote("\n".join(filtered_lines), max_chars)
+
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if not progress_queue or not _run_still_current():
+                return
+
+            if event_type == "memory.prefetch":
+                if source.platform != Platform.DISCORD:
+                    return
+                memory_mode = resolve_display_setting(user_config, platform_key, "memory_context", "summary")
+                if memory_mode == "off":
+                    return
+                try:
+                    memory_max_chars = int(resolve_display_setting(user_config, platform_key, "memory_context_max_chars", 1200) or 1200)
+                except Exception:
+                    memory_max_chars = 1200
+                providers = kwargs.get("providers") or []
+                if not providers and kwargs.get("provider_count"):
+                    providers = ["memory"]
+                provider_label = ", ".join(str(p) for p in providers) if providers else "memory"
+                chars = int(kwargs.get("chars") or len(preview or ""))
+                msg = f"🧠 **Loaded memory context from {provider_label}** ({chars} chars)"
+                if memory_mode in ("preview", "full") and preview:
+                    formatted_preview = _discord_memory_preview(preview, memory_max_chars)
+                    if formatted_preview:
+                        msg = f"{msg}\n{formatted_preview}"
+                progress_queue.put(msg)
                 return
 
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)

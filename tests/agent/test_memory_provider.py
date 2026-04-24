@@ -202,6 +202,20 @@ class TestMemoryManager:
         assert p1.prefetch_queries == ["what do you know?"]
         assert p2.prefetch_queries == ["what do you know?"]
 
+    def test_prefetch_all_details_returns_provider_names(self):
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin")
+        p1._prefetch_result = "Memory from builtin"
+        p2 = FakeMemoryProvider("hindsight")
+        p2._prefetch_result = "Memory from hindsight"
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+
+        text, providers = mgr.prefetch_all_details("what do you know?")
+
+        assert text == "Memory from builtin\n\nMemory from hindsight"
+        assert providers == ["builtin", "hindsight"]
+
     def test_prefetch_skips_empty(self):
         mgr = MemoryManager()
         p1 = FakeMemoryProvider("builtin")
